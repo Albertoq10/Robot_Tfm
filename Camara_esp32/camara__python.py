@@ -23,7 +23,7 @@ bytes_data = b""
 cv2.namedWindow("ESP32-CAM Stream", cv2.WINDOW_NORMAL)
 cv2.resizeWindow("ESP32-CAM Stream", 800, 600)
 
-for chunk in response.iter_content(chunk_size=1024):
+for chunk in response.iter_content(chunk_size=16384):
     bytes_data += chunk
 
     start = bytes_data.find(b"\xff\xd8")  # inicio JPG
@@ -31,10 +31,12 @@ for chunk in response.iter_content(chunk_size=1024):
 
     if start != -1 and end != -1:
         jpg = bytes_data[start:end + 2]
-        bytes_data = bytes_data[end + 2:]
+        bytes_data = b""
 
-        frame = cv2.imdecode(np.frombuffer(jpg, dtype=np.uint8), cv2.IMREAD_COLOR)
-
+        frame = cv2.imdecode(
+            np.frombuffer(jpg, dtype=np.uint8),
+            cv2.IMREAD_COLOR
+        )
         if frame is None:
             continue
 
