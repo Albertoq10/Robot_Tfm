@@ -6,21 +6,17 @@
 #include <Adafruit_AHTX0.h>
 #include "Adafruit_VL53L0X.h"
 
-// ID único del dispositivo
+// ID
 #define DEVICE_ID "robot_01"
 
-// Pines I2C ESP32
 #define I2C_SDA 21
 #define I2C_SCL 22
 
-// Datos de red
 const char* WIFI_SSID = "iPhoneBETO";
 const char* WIFI_PASSWORD = "12345678";
 
-// IP de tu laptop donde corre Flask
 const char* SERVER_BASE_URL = "http://172.20.10.7:6000";
 
-// Sensores
 Adafruit_AHTX0 dht;
 Adafruit_VL53L0X lox = Adafruit_VL53L0X();
 
@@ -60,7 +56,7 @@ void setup() {
     tof_ok = true;
   }
 
-  // Conectar WiFi
+  //wifi
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
 
   Serial.println("Conectando a WiFi...");
@@ -86,7 +82,7 @@ void loop() {
       int frontDistanceMm = -1;
       bool tofValid = false;
 
-      // Leer DHT20
+      
       if (dht_ok) {
         sensors_event_t humidity, temp;
         dht.getEvent(&humidity, &temp);
@@ -95,7 +91,7 @@ void loop() {
         humidityPct = humidity.relative_humidity;
       }
 
-      // Leer VL53L0X
+     
       if (tof_ok) {
         VL53L0X_RangingMeasurementData_t measure;
         lox.rangingTest(&measure, false);
