@@ -5,8 +5,8 @@
 #include <Wire.h>
 #include <Adafruit_AHTX0.h>
 #include "Adafruit_VL53L0X.h"
+#include <Adafruit_INA219.h>
 
-// ID
 #define DEVICE_ID "robot_01"
 
 #define I2C_SDA 21
@@ -19,12 +19,14 @@ const char* SERVER_BASE_URL = "http://172.20.10.7:6000";
 
 Adafruit_AHTX0 dht;
 Adafruit_VL53L0X lox = Adafruit_VL53L0X();
+Adafruit_INA219 ina219;
 
 bool dht_ok = false;
 bool tof_ok = false;
+bool ina_ok = false;
 
 unsigned long lastHttpSend = 0;
-const unsigned long HTTP_SEND_INTERVAL = 2000; // enviar cada 2 segundos
+const unsigned long HTTP_SEND_INTERVAL = 2000;
 
 WiFiClient wifi;
 
@@ -33,12 +35,10 @@ void setup() {
   delay(1000);
 
   Serial.println();
-  Serial.println("DHT20 + VL53L0X - Envio de datos a Flask e InfluxDB");
+  Serial.println("DHT20 + VL53L0X + INA219 - Envio de datos a Flask e InfluxDB");
 
-  // Iniciar I2C
   Wire.begin(I2C_SDA, I2C_SCL);
 
-  // Iniciar DHT20/AHT20
   if (!dht.begin()) {
     Serial.println("No se encontro el sensor DHT20/AHT20. Revisa conexiones.");
     dht_ok = false;
@@ -47,7 +47,6 @@ void setup() {
     dht_ok = true;
   }
 
-  // Iniciar VL53L0X
   if (!lox.begin()) {
     Serial.println("No se encontro el sensor VL53L0X. Revisa conexiones.");
     tof_ok = false;
@@ -56,7 +55,15 @@ void setup() {
     tof_ok = true;
   }
 
-  //wifi
+  if (!ina219.begin()) {
+    Serial.println("Failed to find INA219 chip");
+    ina_ok = false;
+  } else {
+    ina219.setCalibration_16V_400mA();
+    Serial.println("INA219 detectado correctamente.");
+    ina_ok = true;
+  }
+
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
 
   Serial.println("Conectando a WiFi...");
@@ -82,7 +89,12 @@ void loop() {
       int frontDistanceMm = -1;
       bool tofValid = false;
 
-      
+      float shuntvoltage = 0;
+      float busvoltage = 0;
+      float current_mA = 0;
+      float loadvoltage = 0;
+      float power_mW = 0;
+
       if (dht_ok) {
         sensors_event_t humidity, temp;
         dht.getEvent(&humidity, &temp);
@@ -91,7 +103,6 @@ void loop() {
         humidityPct = humidity.relative_humidity;
       }
 
-     
       if (tof_ok) {
         VL53L0X_RangingMeasurementData_t measure;
         lox.rangingTest(&measure, false);
@@ -105,7 +116,15 @@ void loop() {
         }
       }
 
-      StaticJsonDocument<384> doc;
+      if (ina_ok) {
+        shuntvoltage = ina219.getShuntVoltage_mV();
+        busvoltage = ina219.getBusVoltage_V();
+        current_mA = ina219.getCurrent_mA();
+        power_mW = ina219.getPower_mW();
+        loadvoltage = busvoltage + (shuntvoltage / 1000);
+      }
+
+      StaticJsonDocument<512> doc;
 
       doc["device_id"] = DEVICE_ID;
 
@@ -117,6 +136,14 @@ void loop() {
       if (tof_ok) {
         doc["front_distance_mm"] = frontDistanceMm;
         doc["tof_valid"] = tofValid;
+      }
+
+      if (ina_ok) {
+        doc["bus_voltage_v"] = busvoltage;
+        doc["shunt_voltage_mv"] = shuntvoltage;
+        doc["load_voltage_v"] = loadvoltage;
+        doc["current_ma"] = current_mA;
+        doc["power_mw"] = power_mW;
       }
 
       String json_string;

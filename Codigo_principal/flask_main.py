@@ -6,14 +6,11 @@ from influxdb_client.client.write_api import SYNCHRONOUS
 
 app = Flask("servidor_flask")
 
-# =========================
-# Configuración InfluxDB Cloud
-# =========================
-
 INFLUX_URL = "https://us-east-1-1.aws.cloud2.influxdata.com"
 INFLUX_TOKEN = "YQ3PP1vQBgVwNJjT0zkbos6WF1PIrwAjPshrpD6qK4fOXrPhOFVXsFTRpKMm7qlTsbh4mnYtSRVdaPyd5a0Lsg=="
 INFLUX_ORG = "Student"
 INFLUX_BUCKET = "Robot_TFM"
+
 
 client = InfluxDBClient(
     url=INFLUX_URL,
@@ -42,6 +39,12 @@ def sensor_values():
     front_distance = data.get("front_distance_mm")
     tof_valid = data.get("tof_valid", False)
 
+    bus_voltage = data.get("bus_voltage_v")
+    shunt_voltage = data.get("shunt_voltage_mv")
+    load_voltage = data.get("load_voltage_v")
+    current_ma = data.get("current_ma")
+    power_mw = data.get("power_mw")
+
     print("----- Datos recibidos -----")
     print(f"Tiempo: {datetime.now()}")
     print(f"Device ID: {device_id}")
@@ -49,6 +52,11 @@ def sensor_values():
     print(f"Humedad: {humidity} %")
     print(f"Distancia frontal: {front_distance} mm")
     print(f"ToF válido: {tof_valid}")
+    print(f"Bus Voltage: {bus_voltage} V")
+    print(f"Shunt Voltage: {shunt_voltage} mV")
+    print(f"Load Voltage: {load_voltage} V")
+    print(f"Current: {current_ma} mA")
+    print(f"Power: {power_mw} mW")
     print()
 
     try:
@@ -67,6 +75,21 @@ def sensor_values():
 
         if front_distance is not None:
             point = point.field("front_distance_mm", int(front_distance))
+
+        if bus_voltage is not None:
+            point = point.field("bus_voltage_v", float(bus_voltage))
+
+        if shunt_voltage is not None:
+            point = point.field("shunt_voltage_mv", float(shunt_voltage))
+
+        if load_voltage is not None:
+            point = point.field("load_voltage_v", float(load_voltage))
+
+        if current_ma is not None:
+            point = point.field("current_ma", float(current_ma))
+
+        if power_mw is not None:
+            point = point.field("power_mw", float(power_mw))
 
         write_api.write(
             bucket=INFLUX_BUCKET,
