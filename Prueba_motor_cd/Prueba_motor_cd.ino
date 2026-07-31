@@ -25,32 +25,29 @@ bool tof_right_ok = false;
 bool tof_left_ok  = false;
 
 
-// Motor izquierdo
+
 const int enA = 32;  
 const int in1 = 13;
 const int in2 = 14;
 
-// Motor derecho
 const int enB = 33;
 const int in3 = 18;
 const int in4 = 19;
 
-/
+
 const int freq = 1000;
 const int resolution = 8; // 0 - 255
 
 const int pwmChannelA = 0;
 const int pwmChannelB = 1;
 
-// =========================
-// PARÁMETROS DE MOVIMIENTO
-// =========================
-const int SPEED_NORMAL = 160;   // velocidad normal
-const int SPEED_TURN   = 150;   // velocidad para girar
-const int SPEED_BACK   = 130;   // velocidad para retroceder
 
-const int FRONT_LIMIT_MM = 250; // si hay obstáculo a menos de 25 cm, evita
-const int SIDE_LIMIT_MM  = 180; // lateral mínimo aceptable
+const int SPEED_NORMAL = 100;   
+const int SPEED_TURN   = 180;   
+const int SPEED_BACK   = 150; 
+
+const int FRONT_LIMIT_MM = 500; 
+const int SIDE_LIMIT_MM  = 300; 
 
 
 int readToF(Adafruit_VL53L0X &sensor, bool sensor_ok, bool &valid) {
@@ -105,9 +102,9 @@ void moveBackward(int speedValue) {
 }
 
 void turnRight(int speedValue) {
-  // Motor izquierdo avanza, motor derecho retrocede
-  digitalWrite(in1, HIGH);
-  digitalWrite(in2, LOW);
+  // Giro a la derecha corregido
+  digitalWrite(in1, LOW);
+  digitalWrite(in2, HIGH);
 
   digitalWrite(in3, LOW);
   digitalWrite(in4, HIGH);
@@ -117,9 +114,9 @@ void turnRight(int speedValue) {
 }
 
 void turnLeft(int speedValue) {
-  // Motor izquierdo retrocede, motor derecho avanza
-  digitalWrite(in1, LOW);
-  digitalWrite(in2, HIGH);
+  // Giro a la izquierda corregido
+  digitalWrite(in1, HIGH);
+  digitalWrite(in2, LOW);
 
   digitalWrite(in3, HIGH);
   digitalWrite(in4, LOW);
@@ -209,53 +206,84 @@ void loop() {
   
 
   bool frontBlocked = frontValid && frontDistance < FRONT_LIMIT_MM;
-  bool rightFree = rightValid && rightDistance > SIDE_LIMIT_MM;
-  bool leftFree  = leftValid  && leftDistance  > SIDE_LIMIT_MM;
 
-  if (!frontBlocked) {
-    Serial.println("Accion: avanzar");
-    moveForward(SPEED_NORMAL);
+bool rightTooClose = rightValid && rightDistance < SIDE_LIMIT_MM;
+bool leftTooClose  = leftValid  && leftDistance  < SIDE_LIMIT_MM;
+
+bool rightFree = rightValid && rightDistance > SIDE_LIMIT_MM;
+bool leftFree  = leftValid  && leftDistance  > SIDE_LIMIT_MM;
+
+  if (!frontBlocked && !rightTooClose && !leftTooClose) {
+  Serial.println("Accion: avanzar");
+  moveForward(SPEED_NORMAL);
+
+  
+  delay(100);
+}
+else if (!frontBlocked && rightTooClose && !leftTooClose) {
+  Serial.println("Muy cerca derecha: corregir izquierda");
+  turnLeft(SPEED_TURN);
+  delay(250);
+  stopMotors();
+  delay(100);
+}
+else if (!frontBlocked && leftTooClose && !rightTooClose) {
+  Serial.println("Muy cerca izquierda: corregir derecha");
+  turnRight(SPEED_TURN);
+  delay(250);
+  stopMotors();
+  delay(100);
+}
+else if (!frontBlocked && rightTooClose && leftTooClose) {
+  Serial.println("Pasillo estrecho: avanzar lento");
+  moveForward(70);
+  delay(100);
+  stopMotors();
+  delay(80);
+}
+else {
+  Serial.println("Obstaculo frontal detectado");
+
+  stopMotors();
+  delay(200);
+
+  if (rightFree && !leftFree) {
+    Serial.println("Escape: girar derecha largo");
+    turnRight(SPEED_TURN);
+    delay(1200);
+  } 
+  else if (leftFree && !rightFree) {
+    Serial.println("Escape: girar izquierda largo");
+    turnLeft(SPEED_TURN);
+    delay(1200);
+  } 
+  else if (rightFree && leftFree) {
+    if (rightDistance > leftDistance) {
+      Serial.println("Escape: derecha, hay mas espacio");
+      turnRight(SPEED_TURN);
+    } else {
+      Serial.println("Escape: izquierda, hay mas espacio");
+      turnLeft(SPEED_TURN);
+  
+    }
+    delay(850);
   } 
   else {
-    Serial.println("Obstaculo frontal detectado");
+    Serial.println("Escape fuerte: retroceder y girar");
+
+    moveBackward(SPEED_BACK);
+    delay(1200);
 
     stopMotors();
-    delay(150);
+    delay(200);
 
-    if (rightFree && !leftFree) {
-      Serial.println("Accion: girar derecha");
-      turnRight(SPEED_TURN);
-      delay(450);
-    } 
-    else if (leftFree && !rightFree) {
-      Serial.println("Accion: girar izquierda");
-      turnLeft(SPEED_TURN);
-      delay(450);
-    } 
-    else if (rightFree && leftFree) {
-      // Si ambos lados están libres, elegir el lado con más espacio
-      if (rightDistance > leftDistance) {
-        Serial.println("Accion: girar derecha, hay mas espacio");
-        turnRight(SPEED_TURN);
-      } else {
-        Serial.println("Accion: girar izquierda, hay mas espacio");
-        turnLeft(SPEED_TURN);
-      }
-      delay(450);
-    } 
-    else {
-      // Si todo estacerrado, retrocede un poco y gira
-      Serial.println("Accion: retroceder y girar");
-      moveBackward(SPEED_BACK);
-      delay(400);
-
-      stopMotors();
-      delay(150);
-
-      turnRight(SPEED_TURN);
-      delay(500);
-    }
+    turnRight(SPEED_TURN);
+    delay(1300);
   }
 
-  delay(100);
+  stopMotors();
+  delay(150);
+}
+
+delay(100);
 }
