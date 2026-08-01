@@ -49,6 +49,34 @@ const int SPEED_BACK   = 150;
 const int FRONT_LIMIT_MM = 500; 
 const int SIDE_LIMIT_MM  = 300; 
 
+enum RobotState {
+  STATE_NORMAL,
+  STATE_CORRECT_LEFT,
+  STATE_CORRECT_RIGHT,
+  STATE_BACKWARD,
+  STATE_TURN_RIGHT,
+  STATE_TURN_LEFT
+};
+
+RobotState robotState = STATE_NORMAL;
+
+unsigned long stateStartTime = 0;
+unsigned long lastSensorPrint = 0;
+
+const unsigned long CORRECT_TIME = 250;
+const unsigned long BACK_TIME = 1200;
+const unsigned long TURN_TIME = 1200;
+const unsigned long ESCAPE_TURN_TIME = 1300;
+const unsigned long SENSOR_PRINT_TIME = 300;
+
+bool escapeTurnRight = true;
+
+void startState(RobotState newState) {
+  robotState = newState;
+  stateStartTime = millis();
+}
+
+
 
 int readToF(Adafruit_VL53L0X &sensor, bool sensor_ok, bool &valid) {
   if (!sensor_ok) {
@@ -179,6 +207,9 @@ void setup() {
 }
 
 void loop() {
+
+  unsigned long now = millis();
+
   bool frontValid = false;
   bool rightValid = false;
   bool leftValid  = false;
@@ -187,21 +218,26 @@ void loop() {
   int rightDistance = readToF(tofRight, tof_right_ok, rightValid);
   int leftDistance  = readToF(tofLeft,  tof_left_ok,  leftValid);
 
-  Serial.println("----- Lecturas ToF -----");
-  Serial.print("Frontal: ");
-  Serial.print(frontDistance);
-  Serial.print(" mm | valido: ");
-  Serial.println(frontValid);
 
-  Serial.print("Derecho: ");
-  Serial.print(rightDistance);
-  Serial.print(" mm | valido: ");
-  Serial.println(rightValid);
+  if (now - lastSensorPrint >= SENSOR_PRINT_TIME) {
+    lastSensorPrint = now;
 
-  Serial.print("Izquierdo: ");
-  Serial.print(leftDistance);
-  Serial.print(" mm | valido: ");
-  Serial.println(leftValid);
+    Serial.println("----- Lecturas ToF -----");
+    Serial.print("Frontal: ");
+    Serial.print(frontDistance);
+    Serial.print(" mm | valido: ");
+    Serial.println(frontValid);
+
+    Serial.print("Derecho: ");
+    Serial.print(rightDistance);
+    Serial.print(" mm | valido: ");
+    Serial.println(rightValid);
+
+    Serial.print("Izquierdo: ");
+    Serial.print(leftDistance);
+    Serial.print(" mm | valido: ");
+    Serial.println(leftValid);
+  }
 
   
 
@@ -213,77 +249,108 @@ bool leftTooClose  = leftValid  && leftDistance  < SIDE_LIMIT_MM;
 bool rightFree = rightValid && rightDistance > SIDE_LIMIT_MM;
 bool leftFree  = leftValid  && leftDistance  > SIDE_LIMIT_MM;
 
-  if (!frontBlocked && !rightTooClose && !leftTooClose) {
-  Serial.println("Accion: avanzar");
-  moveForward(SPEED_NORMAL);
-
-  
-  delay(100);
-}
-else if (!frontBlocked && rightTooClose && !leftTooClose) {
-  Serial.println("Muy cerca derecha: corregir izquierda");
-  turnLeft(SPEED_TURN);
-  delay(250);
-  stopMotors();
-  delay(100);
-}
-else if (!frontBlocked && leftTooClose && !rightTooClose) {
-  Serial.println("Muy cerca izquierda: corregir derecha");
-  turnRight(SPEED_TURN);
-  delay(250);
-  stopMotors();
-  delay(100);
-}
-else if (!frontBlocked && rightTooClose && leftTooClose) {
-  Serial.println("Pasillo estrecho: avanzar lento");
-  moveForward(70);
-  delay(100);
-  stopMotors();
-  delay(80);
-}
-else {
-  Serial.println("Obstaculo frontal detectado");
-
-  stopMotors();
-  delay(200);
-
-  if (rightFree && !leftFree) {
-    Serial.println("Escape: girar derecha largo");
-    turnRight(SPEED_TURN);
-    delay(1200);
-  } 
-  else if (leftFree && !rightFree) {
-    Serial.println("Escape: girar izquierda largo");
-    turnLeft(SPEED_TURN);
-    delay(1200);
-  } 
-  else if (rightFree && leftFree) {
-    if (rightDistance > leftDistance) {
-      Serial.println("Escape: derecha, hay mas espacio");
-      turnRight(SPEED_TURN);
-    } else {
-      Serial.println("Escape: izquierda, hay mas espacio");
-      turnLeft(SPEED_TURN);
-  
-    }
-    delay(850);
-  } 
-  else {
-    Serial.println("Escape fuerte: retroceder y girar");
-
-    moveBackward(SPEED_BACK);
-    delay(1200);
-
+  if (frontBlocked && robotState == STATE_NORMAL) {
     stopMotors();
-    delay(200);
-
-    turnRight(SPEED_TURN);
-    delay(1300);
+    startState(STATE_BACKWARD);
+    return;
   }
 
-  stopMotors();
-  delay(150);
-}
+  if (robotState == STATE_CORRECT_LEFT) {
+    turnLeft(SPEED_TURN);
 
-delay(100);
+    if (now - stateStartTime >= CORRECT_TIME) {
+      stopMotors();
+      startState(STATE_NORMAL);
+    }
+
+    return;
+  }
+
+  if (robotState == STATE_CORRECT_RIGHT) {
+    turnRight(SPEED_TURN);
+
+    if (now - stateStartTime >= CORRECT_TIME) {
+      stopMotors();
+      startState(STATE_NORMAL);
+    }
+
+    return;
+  }
+
+  if (robotState == STATE_BACKWARD) {
+    moveBackward(SPEED_BACK);
+
+    if (now - stateStartTime >= BACK_TIME) {
+      stopMotors();
+
+      if (rightFree && !leftFree) {
+        startState(STATE_TURN_RIGHT);
+      } 
+      else if (leftFree && !rightFree) {
+        startState(STATE_TURN_LEFT);
+      } 
+      else if (rightFree && leftFree) {
+        if (rightDistance > leftDistance) {
+          startState(STATE_TURN_RIGHT);
+        } else {
+          startState(STATE_TURN_LEFT);
+        }
+      } 
+      else {
+        if (escapeTurnRight) {
+          startState(STATE_TURN_RIGHT);
+        } else {
+          startState(STATE_TURN_LEFT);
+        }
+
+        escapeTurnRight = !escapeTurnRight;
+      }
+    }
+
+    return;
+  }
+
+  if (robotState == STATE_TURN_RIGHT) {
+    turnRight(SPEED_TURN);
+
+    if (now - stateStartTime >= ESCAPE_TURN_TIME) {
+      stopMotors();
+      startState(STATE_NORMAL);
+    }
+
+    return;
+  }
+
+  if (robotState == STATE_TURN_LEFT) {
+    turnLeft(SPEED_TURN);
+
+    if (now - stateStartTime >= ESCAPE_TURN_TIME) {
+      stopMotors();
+      startState(STATE_NORMAL);
+    }
+
+    return;
+  }
+
+  if (!frontBlocked && !rightTooClose && !leftTooClose) {
+    Serial.println("Accion: avanzar");
+    moveForward(SPEED_NORMAL);
+  }
+  else if (!frontBlocked && rightTooClose && !leftTooClose) {
+    Serial.println("Muy cerca derecha: corregir izquierda");
+    startState(STATE_CORRECT_LEFT);
+  }
+  else if (!frontBlocked && leftTooClose && !rightTooClose) {
+    Serial.println("Muy cerca izquierda: corregir derecha");
+    startState(STATE_CORRECT_RIGHT);
+  }
+  else if (!frontBlocked && rightTooClose && leftTooClose) {
+    Serial.println("Pasillo estrecho: avanzar lento");
+    moveForward(70);
+  }
+  else {
+    Serial.println("Obstaculo frontal detectado");
+    stopMotors();
+    startState(STATE_BACKWARD);
+  }
 }
