@@ -20,6 +20,23 @@
 #define TOF_RIGHT_ADDR 0x31
 #define TOF_LEFT_ADDR  0x32
 
+#define MQ2_AO_PIN 35
+
+const unsigned long MQ2_WARMUP_TIME = 20000;
+const unsigned long MQ2_READ_INTERVAL = 1000;
+
+unsigned long mq2StartTime = 0;
+unsigned long lastMq2Read = 0;
+
+bool mq2Ready = false;
+
+int gasRaw = -1;
+float gasVoltageEsp = 0.0;
+float gasVoltageMq2 = 0.0;
+bool gasAlert = false;
+
+const int GAS_THRESHOLD = 2200;
+
 const char* WIFI_SSID = "iPhoneBETO";
 const char* WIFI_PASSWORD = "12345678";
 const char* SERVER_BASE_URL = "http://172.20.10.7:6000";
@@ -73,12 +90,16 @@ RobotState robotState = STATE_NORMAL;
 unsigned long stateStartTime = 0;
 unsigned long lastSensorPrint = 0;
 unsigned long lastHttpSend = 0;
+unsigned long lastCommandCheck = 0;
 
 const unsigned long CORRECT_TIME = 250;
 const unsigned long BACK_TIME = 1200;
 const unsigned long ESCAPE_TURN_TIME = 1300;
-const unsigned long SENSOR_PRINT_TIME = 300;
-const unsigned long HTTP_SEND_INTERVAL = 2000;
+const unsigned long SENSOR_PRINT_TIME = 1000;
+const unsigned long HTTP_SEND_INTERVAL = 3000;
+const unsigned long COMMAND_CHECK_INTERVAL = 80;
+
+const int REMOTE_COMMAND_TIMEOUT_MS = 300;
 
 bool escapeTurnRight = true;
 
@@ -100,6 +121,11 @@ float busvoltage = 0;
 float current_mA = 0;
 float loadvoltage = 0;
 float power_mW = 0;
+
+String robotMode = "autonomous";
+String remoteCommand = "stop";
+bool cameraEnabled = true;
+int commandAgeMs = 9999;
 
 void startState(RobotState newState) {
   robotState = newState;
@@ -223,6 +249,28 @@ void initToFSensors() {
   Serial.println(tof_left_ok ? "VL53L0X izquierdo OK" : "VL53L0X izquierdo NO detectado");
 }
 
+void readMq2Sensor(unsigned long now) {
+  if (!mq2Ready) {
+    if (now - mq2StartTime >= MQ2_WARMUP_TIME) {
+      mq2Ready = true;
+      Serial.println("MQ-2 listo para medir.");
+    } else {
+      return;
+    }
+  }
+
+  if (now - lastMq2Read >= MQ2_READ_INTERVAL) {
+    lastMq2Read = now;
+
+    gasRaw = analogRead(MQ2_AO_PIN);
+
+    gasVoltageEsp = gasRaw * (3.3 / 4095.0);
+    gasVoltageMq2 = gasVoltageEsp * 1.5;
+
+    gasAlert = gasRaw > GAS_THRESHOLD;
+  }
+}
+
 void readEnvironmentalSensors() {
   if (dht_ok) {
     sensors_event_t humidity, temp;
@@ -241,6 +289,40 @@ void readEnvironmentalSensors() {
   }
 }
 
+void readCommandFromFlask() {
+  if (WiFi.status() != WL_CONNECTED) {
+    return;
+  }
+
+  String url = String(SERVER_BASE_URL) + "/command";
+
+  HTTPClient http;
+  http.begin(wifi, url);
+  http.setConnectTimeout(120);
+  http.setTimeout(120);
+
+  int httpResponseCode = http.GET();
+
+  if (httpResponseCode == 200) {
+    String response = http.getString();
+
+    StaticJsonDocument<256> doc;
+    DeserializationError error = deserializeJson(doc, response);
+
+    if (!error) {
+      const char* modeValue = doc["robot_mode"] | robotMode.c_str();
+      const char* commandValue = doc["remote_command"] | remoteCommand.c_str();
+
+      robotMode = String(modeValue);
+      remoteCommand = String(commandValue);
+      cameraEnabled = doc["camera_enabled"] | cameraEnabled;
+      commandAgeMs = doc["command_age_ms"] | commandAgeMs;
+    }
+  }
+
+  http.end();
+}
+
 void sendDataToFlask() {
   if (WiFi.status() != WL_CONNECTED) {
     Serial.println("WiFi desconectado");
@@ -249,10 +331,13 @@ void sendDataToFlask() {
 
   readEnvironmentalSensors();
 
-  StaticJsonDocument<1024> doc;
+  StaticJsonDocument<1536> doc;
 
   doc["device_id"] = DEVICE_ID;
   doc["robot_state"] = getRobotStateName();
+  doc["robot_mode"] = robotMode;
+  doc["remote_command"] = remoteCommand;
+  doc["camera_enabled"] = cameraEnabled;
 
   if (dht_ok) {
     doc["temperature_c"] = temperatureC;
@@ -280,6 +365,15 @@ void sendDataToFlask() {
     doc["load_voltage_v"] = loadvoltage;
     doc["current_ma"] = current_mA;
     doc["power_mw"] = power_mW;
+  }
+
+  doc["mq2_ready"] = mq2Ready;
+
+  if (mq2Ready) {
+    doc["gas_raw"] = gasRaw;
+    doc["gas_voltage_esp_v"] = gasVoltageEsp;
+    doc["gas_voltage_v"] = gasVoltageMq2;
+    doc["gas_alert"] = gasAlert;
   }
 
   String json_string;
@@ -317,98 +411,14 @@ void sendDataToFlask() {
   Serial.println("===================================");
 }
 
-void setup() {
-  Serial.begin(115200);
-  delay(1000);
-
-  Serial.println();
-  Serial.println("Robot ESP32 + 3 VL53L0X + L298N + DHT20 + INA219 + Flask");
-
-  Wire.begin(I2C_SDA, I2C_SCL);
-
-  pinMode(in1, OUTPUT);
-  pinMode(in2, OUTPUT);
-  pinMode(in3, OUTPUT);
-  pinMode(in4, OUTPUT);
-
-  ledcAttachChannel(enA, freq, resolution, pwmChannelA);
-  ledcAttachChannel(enB, freq, resolution, pwmChannelB);
-
-  stopMotors();
-
-  if (!dht.begin()) {
-    Serial.println("No se encontro el sensor DHT20/AHT20.");
-    dht_ok = false;
-  } else {
-    Serial.println("Sensor DHT20/AHT20 detectado correctamente.");
-    dht_ok = true;
-  }
-
-  if (!ina219.begin()) {
-    Serial.println("Failed to find INA219 chip");
-    ina_ok = false;
-  } else {
-    ina219.setCalibration_32V_2A();
-    Serial.println("INA219 detectado correctamente.");
-    ina_ok = true;
-  }
-
-  initToFSensors();
-
-  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-
-  Serial.println("Conectando a WiFi...");
-  while (WiFi.status() != WL_CONNECTED) {
-    delay(500);
-    Serial.println("Conectando...");
-  }
-
-  Serial.println("Conectado a WiFi");
-  Serial.print("IP ESP32: ");
-  Serial.println(WiFi.localIP());
-
-  Serial.println("Sistema listo.");
-}
-
-void loop() {
-  unsigned long now = millis();
-
-  frontDistanceMm = readToF(tofFront, tof_front_ok, frontTofValid);
-  rightDistanceMm = readToF(tofRight, tof_right_ok, rightTofValid);
-  leftDistanceMm  = readToF(tofLeft,  tof_left_ok,  leftTofValid);
-
-  if (now - lastSensorPrint >= SENSOR_PRINT_TIME) {
-    lastSensorPrint = now;
-
-    Serial.println("----- Lecturas ToF -----");
-
-    Serial.print("Frontal: ");
-    Serial.print(frontDistanceMm);
-    Serial.print(" mm | valido: ");
-    Serial.println(frontTofValid);
-
-    Serial.print("Derecho: ");
-    Serial.print(rightDistanceMm);
-    Serial.print(" mm | valido: ");
-    Serial.println(rightTofValid);
-
-    Serial.print("Izquierdo: ");
-    Serial.print(leftDistanceMm);
-    Serial.print(" mm | valido: ");
-    Serial.println(leftTofValid);
-
-    Serial.print("Estado: ");
-    Serial.println(getRobotStateName());
-  }
-
-  bool frontBlocked = frontTofValid && frontDistanceMm < FRONT_LIMIT_MM;
-
-  bool rightTooClose = rightTofValid && rightDistanceMm < SIDE_LIMIT_MM;
-  bool leftTooClose  = leftTofValid  && leftDistanceMm  < SIDE_LIMIT_MM;
-
-  bool rightFree = rightTofValid && rightDistanceMm > SIDE_LIMIT_MM;
-  bool leftFree  = leftTofValid  && leftDistanceMm  > SIDE_LIMIT_MM;
-
+void handleAutonomousNavigation(
+  unsigned long now,
+  bool frontBlocked,
+  bool rightTooClose,
+  bool leftTooClose,
+  bool rightFree,
+  bool leftFree
+) {
   if (frontBlocked && robotState == STATE_NORMAL) {
     stopMotors();
     startState(STATE_BACKWARD);
@@ -438,17 +448,17 @@ void loop() {
 
       if (rightFree && !leftFree) {
         startState(STATE_TURN_RIGHT);
-      } 
+      }
       else if (leftFree && !rightFree) {
         startState(STATE_TURN_LEFT);
-      } 
+      }
       else if (rightFree && leftFree) {
         if (rightDistanceMm > leftDistanceMm) {
           startState(STATE_TURN_RIGHT);
         } else {
           startState(STATE_TURN_LEFT);
         }
-      } 
+      }
       else {
         if (escapeTurnRight) {
           startState(STATE_TURN_RIGHT);
@@ -493,6 +503,186 @@ void loop() {
       stopMotors();
       startState(STATE_BACKWARD);
     }
+  }
+}
+
+void handleRemoteControl(bool frontBlocked) {
+  if (commandAgeMs > REMOTE_COMMAND_TIMEOUT_MS) {
+    stopMotors();
+    return;
+  }
+
+  if (remoteCommand == "forward") {
+    if (!frontBlocked) {
+      moveForward(SPEED_NORMAL);
+    } else {
+      stopMotors();
+    }
+  }
+  else if (remoteCommand == "backward") {
+    moveBackward(SPEED_BACK);
+  }
+  else if (remoteCommand == "left") {
+    turnLeft(SPEED_TURN);
+  }
+  else if (remoteCommand == "right") {
+    turnRight(SPEED_TURN);
+  }
+  else {
+    stopMotors();
+  }
+}
+
+void handleStationaryMode() {
+  stopMotors();
+}
+
+void setup() {
+  Serial.begin(115200);
+  delay(1000);
+
+  Serial.println();
+  Serial.println("Robot ESP32 + ToF + DHT20 + INA219 + MQ-2 + Flask + modos");
+
+  Wire.begin(I2C_SDA, I2C_SCL);
+
+  analogSetAttenuation(ADC_11db);
+  mq2StartTime = millis();
+  Serial.println("MQ-2 calentando...");
+
+  pinMode(in1, OUTPUT);
+  pinMode(in2, OUTPUT);
+  pinMode(in3, OUTPUT);
+  pinMode(in4, OUTPUT);
+
+  ledcAttachChannel(enA, freq, resolution, pwmChannelA);
+  ledcAttachChannel(enB, freq, resolution, pwmChannelB);
+
+  stopMotors();
+
+  if (!dht.begin()) {
+    Serial.println("No se encontro el sensor DHT20/AHT20.");
+    dht_ok = false;
+  } else {
+    Serial.println("Sensor DHT20/AHT20 detectado correctamente.");
+    dht_ok = true;
+  }
+
+  if (!ina219.begin()) {
+    Serial.println("Failed to find INA219 chip");
+    ina_ok = false;
+  } else {
+    ina219.setCalibration_32V_2A();
+    Serial.println("INA219 detectado correctamente.");
+    ina_ok = true;
+  }
+
+  initToFSensors();
+
+  WiFi.setSleep(false);
+  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+
+  Serial.println("Conectando a WiFi...");
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.println("Conectando...");
+  }
+
+  Serial.println("Conectado a WiFi");
+  Serial.print("IP ESP32: ");
+  Serial.println(WiFi.localIP());
+
+  Serial.println("Sistema listo.");
+}
+
+void loop() {
+  unsigned long now = millis();
+
+  readMq2Sensor(now);
+
+  frontDistanceMm = readToF(tofFront, tof_front_ok, frontTofValid);
+  rightDistanceMm = readToF(tofRight, tof_right_ok, rightTofValid);
+  leftDistanceMm  = readToF(tofLeft,  tof_left_ok,  leftTofValid);
+
+  bool frontBlocked = frontTofValid && frontDistanceMm < FRONT_LIMIT_MM;
+
+  bool rightTooClose = rightTofValid && rightDistanceMm < SIDE_LIMIT_MM;
+  bool leftTooClose  = leftTofValid  && leftDistanceMm  < SIDE_LIMIT_MM;
+
+  bool rightFree = rightTofValid && rightDistanceMm > SIDE_LIMIT_MM;
+  bool leftFree  = leftTofValid  && leftDistanceMm  > SIDE_LIMIT_MM;
+
+  if (now - lastCommandCheck >= COMMAND_CHECK_INTERVAL) {
+    lastCommandCheck = now;
+    readCommandFromFlask();
+  }
+
+  if (now - lastSensorPrint >= SENSOR_PRINT_TIME) {
+    lastSensorPrint = now;
+
+    Serial.println("----- Estado general -----");
+
+    Serial.print("Modo: ");
+    Serial.println(robotMode);
+
+    Serial.print("Comando remoto: ");
+    Serial.println(remoteCommand);
+
+    Serial.print("Edad comando: ");
+    Serial.print(commandAgeMs);
+    Serial.println(" ms");
+
+    Serial.print("Estado navegacion: ");
+    Serial.println(getRobotStateName());
+
+    Serial.print("Frontal: ");
+    Serial.print(frontDistanceMm);
+    Serial.print(" mm | valido: ");
+    Serial.println(frontTofValid);
+
+    Serial.print("Derecho: ");
+    Serial.print(rightDistanceMm);
+    Serial.print(" mm | valido: ");
+    Serial.println(rightTofValid);
+
+    Serial.print("Izquierdo: ");
+    Serial.print(leftDistanceMm);
+    Serial.print(" mm | valido: ");
+    Serial.println(leftTofValid);
+
+    Serial.print("MQ-2 listo: ");
+    Serial.println(mq2Ready ? "SI" : "NO");
+
+    if (mq2Ready) {
+      Serial.print("MQ-2 raw: ");
+      Serial.print(gasRaw);
+
+      Serial.print(" | V ESP32: ");
+      Serial.print(gasVoltageEsp);
+
+      Serial.print(" V | V MQ2 estimado: ");
+      Serial.print(gasVoltageMq2);
+
+      Serial.print(" V | Alerta gas: ");
+      Serial.println(gasAlert ? "SI" : "NO");
+    }
+  }
+
+  if (robotMode == "stationary") {
+    handleStationaryMode();
+  }
+  else if (robotMode == "remote") {
+    handleRemoteControl(frontBlocked);
+  }
+  else {
+    handleAutonomousNavigation(
+      now,
+      frontBlocked,
+      rightTooClose,
+      leftTooClose,
+      rightFree,
+      leftFree
+    );
   }
 
   if (now - lastHttpSend >= HTTP_SEND_INTERVAL) {
