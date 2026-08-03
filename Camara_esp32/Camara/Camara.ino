@@ -28,6 +28,10 @@
 const char* ssid = "iPhoneBETO";
 const char* password = "12345678";
 
+IPAddress local_IP(172, 20, 10, 11);
+IPAddress gateway(172, 20, 10, 1);
+IPAddress subnet(255, 255, 255, 240);
+
 #define PART_BOUNDARY "123456789000000000000987654321"
 
 // This project was tested with the AI Thinker Model, M5STACK PSRAM Model and M5STACK WITHOUT PSRAM
@@ -239,8 +243,13 @@ void setup() {
     Serial.printf("Camera init failed with error 0x%x", err);
     return;
   }
-  // Wi-Fi connection
+  // Wi-Fi connection with static IP
+  if (!WiFi.config(local_IP, gateway, subnet)) {
+    Serial.println("Error configurando IP fija");
+  }
+
   WiFi.begin(ssid, password);
+
   while (WiFi.status() != WL_CONNECTED) {
     delay(500);
     Serial.print(".");

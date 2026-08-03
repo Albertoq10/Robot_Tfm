@@ -42,7 +42,7 @@ for chunk in response.iter_content(chunk_size=16384):
 
         cv2.putText(
             frame,
-            "ESP32-CAM conectada correctamente",
+            "",
             (20, 40),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.8,
