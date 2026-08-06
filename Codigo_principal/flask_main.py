@@ -8,8 +8,13 @@ import numpy as np
 import requests
 import keyboard
 
+
+from sklearn.ensemble import IsolationForest
+from sklearn.preprocessing import StandardScaler
+
 from influxdb_client import InfluxDBClient, Point, WritePrecision
 from influxdb_client.client.write_api import SYNCHRONOUS
+#pip install flask influxdb-client opencv-python numpy requests keyboard scikit-learn
 
 app = Flask("servidor_flask")
 
@@ -29,6 +34,37 @@ camera_thread = None
 camera_running = False
 
 last_received_data = {}
+
+
+training_data = []
+ml_model = None
+ml_scaler = None
+ml_trained = False
+
+TRAINING_SAMPLES = 30
+
+BATTERY_CAPACITY_MAH = 2450
+BATTERY_EFFICIENCY = 0.85
+USABLE_BATTERY_MAH = BATTERY_CAPACITY_MAH * BATTERY_EFFICIENCY
+
+battery_used_total_mah = 0.0
+last_battery_time = None
+
+prediction_history = {
+    "temperature_c": [],
+    "humidity_pct": [],
+    "load_voltage_v": [],
+    "current_ma": [],
+    "power_mw": [],
+    "battery_percentage": []
+}
+
+PREDICTION_WINDOW = 10
+
+recent_temperatures = []
+recent_humidities = []
+recent_gas_values = []
+recent_currents = []
 
 client = InfluxDBClient(
     url=INFLUX_URL,
@@ -217,6 +253,137 @@ def keyboard_control():
 
         time.sleep(0.05)
 
+def ml_anomaly_detection(temperature, humidity, current_ma, power_mw):
+    global ml_model
+    global ml_scaler
+    global ml_trained
+
+    if temperature is None or humidity is None or current_ma is None or power_mw is None:
+        return {
+            "ml_status": "not_available",
+            "ml_anomaly": False,
+            "ml_score": 0.0,
+            "system_recommendation": "continue",
+            "analysis_reason": "missing_data"
+        }
+
+    sample = [
+        float(temperature),
+        float(humidity),
+        float(current_ma),
+        float(power_mw)
+    ]
+
+    if not ml_trained:
+        training_data.append(sample)
+
+        if len(training_data) >= TRAINING_SAMPLES:
+            ml_scaler = StandardScaler()
+            training_data_scaled = ml_scaler.fit_transform(training_data)
+
+            ml_model = IsolationForest(
+                contamination=0.10,
+                random_state=42
+            )
+
+            ml_model.fit(training_data_scaled)
+            ml_trained = True
+
+            print("Modelo Isolation Forest entrenado.")
+
+        return {
+            "ml_status": "calibrating",
+            "ml_anomaly": False,
+            "ml_score": 0.0,
+            "system_recommendation": "continue",
+            "analysis_reason": "model_calibration"
+        }
+
+    sample_scaled = ml_scaler.transform([sample])
+
+    prediction = ml_model.predict(sample_scaled)[0]
+    score = ml_model.decision_function(sample_scaled)[0]
+
+    if prediction == -1:
+        return {
+            "ml_status": "anomaly",
+            "ml_anomaly": True,
+            "ml_score": float(score),
+            "system_recommendation": "stay",
+            "analysis_reason": "anomaly_detected"
+        }
+
+    return {
+        "ml_status": "normal",
+        "ml_anomaly": False,
+        "ml_score": float(score),
+        "system_recommendation": "move",
+        "analysis_reason": "normal_behavior"
+    }
+
+
+def update_battery_estimation(current_ma):
+    global battery_used_total_mah
+    global last_battery_time
+
+    now = time.time()
+
+    if current_ma is None:
+        battery_remaining_mah = max(USABLE_BATTERY_MAH - battery_used_total_mah, 0)
+        battery_percentage = max((battery_remaining_mah / USABLE_BATTERY_MAH) * 100, 0)
+
+        return {
+            "battery_used_mah": battery_used_total_mah,
+            "battery_remaining_mah": battery_remaining_mah,
+            "battery_percentage": battery_percentage,
+            "estimated_runtime_min": 0.0
+        }
+
+    current_ma = float(current_ma)
+
+    if last_battery_time is not None:
+        delta_time_h = (now - last_battery_time) / 3600
+        battery_used_total_mah += current_ma * delta_time_h
+
+    last_battery_time = now
+
+    battery_remaining_mah = max(USABLE_BATTERY_MAH - battery_used_total_mah, 0)
+    battery_percentage = max((battery_remaining_mah / USABLE_BATTERY_MAH) * 100, 0)
+
+    if current_ma > 0:
+        estimated_runtime_min = (battery_remaining_mah / current_ma) * 60
+    else:
+        estimated_runtime_min = 0.0
+
+    return {
+        "battery_used_mah": battery_used_total_mah,
+        "battery_remaining_mah": battery_remaining_mah,
+        "battery_percentage": battery_percentage,
+        "estimated_runtime_min": estimated_runtime_min
+    }
+
+
+def predict_next_value(name, value):
+    if value is None:
+        return None
+
+    values = prediction_history[name]
+    values.append(float(value))
+    prediction_history[name] = values[-PREDICTION_WINDOW:]
+
+    if len(prediction_history[name]) < 3:
+        return float(value)
+
+    y = np.array(prediction_history[name])
+    x = np.arange(len(y))
+
+    slope, intercept = np.polyfit(x, y, 1)
+    predicted_value = slope * len(y) + intercept
+
+    return float(predicted_value)
+
+
+
 
 @app.route("/", methods=["GET"])
 def home():
@@ -288,6 +455,33 @@ def sensor_values():
     gas_voltage = data.get("gas_voltage_v")
     gas_alert = data.get("gas_alert", False)
 
+    ml_result = ml_anomaly_detection(
+        temperature,
+        humidity,
+        current_ma,
+        power_mw
+    )
+
+    ml_status = ml_result["ml_status"]
+    ml_anomaly = ml_result["ml_anomaly"]
+    ml_score = ml_result["ml_score"]
+    system_recommendation = ml_result["system_recommendation"]
+    analysis_reason = ml_result["analysis_reason"]
+
+    battery_result = update_battery_estimation(current_ma)
+
+    battery_used_mah = battery_result["battery_used_mah"]
+    battery_remaining_mah = battery_result["battery_remaining_mah"]
+    battery_percentage = battery_result["battery_percentage"]
+    estimated_runtime_min = battery_result["estimated_runtime_min"]
+
+    predicted_temperature = predict_next_value("temperature_c", temperature)
+    predicted_humidity = predict_next_value("humidity_pct", humidity)
+    predicted_load_voltage = predict_next_value("load_voltage_v", load_voltage)
+    predicted_current = predict_next_value("current_ma", current_ma)
+    predicted_power = predict_next_value("power_mw", power_mw)
+    predicted_battery_percentage = predict_next_value("battery_percentage", battery_percentage)
+    
     print()
     print("----- Datos recibidos -----")
     print(f"Tiempo: {datetime.now()}")
@@ -299,6 +493,21 @@ def sensor_values():
     print(f"Humedad: {humidity} %")
     print(f"Gas raw: {gas_raw}")
     print(f"Alerta gas: {gas_alert}")
+    print(f"ML status: {ml_status}")
+    print(f"ML anomaly: {ml_anomaly}")
+    print(f"ML score: {ml_score}")
+    print(f"Recomendacion sistema: {system_recommendation}")
+    print(f"Motivo analisis: {analysis_reason}")
+    print(f"Bateria usada: {battery_used_mah} mAh")
+    print(f"Bateria restante: {battery_remaining_mah} mAh")
+    print(f"Bateria porcentaje: {battery_percentage} %")
+    print(f"Autonomia estimada: {estimated_runtime_min} min")
+    print(f"Temperatura predicha: {predicted_temperature} C")
+    print(f"Humedad predicha: {predicted_humidity} %")
+    print(f"Voltaje predicho: {predicted_load_voltage} V")
+    print(f"Corriente predicha: {predicted_current} mA")
+    print(f"Potencia predicha: {predicted_power} mW")
+    print(f"Bateria predicha: {predicted_battery_percentage} %")
     print(f"Distancia frontal: {front_distance} mm")
     print(f"Distancia derecha: {right_distance} mm")
     print(f"Distancia izquierda: {left_distance} mm")
@@ -313,6 +522,9 @@ def sensor_values():
             .tag("robot_mode", robot_mode)
             .tag("remote_command", remote_command)
             .tag("esp32_robot_state", esp32_robot_state)
+            .tag("ml_status", ml_status)
+            .tag("system_recommendation", system_recommendation)
+            .tag("analysis_reason", analysis_reason)
             .time(datetime.now(timezone.utc), WritePrecision.NS)
         )
 
@@ -362,6 +574,30 @@ def sensor_values():
 
         point = point.field("gas_alert", bool(gas_alert))
         point = point.field("camera_enabled", bool(camera_enabled))
+        point = point.field("ml_anomaly", bool(ml_anomaly))
+        point = point.field("ml_score", float(ml_score))
+        point = point.field("battery_used_mah", float(battery_used_mah))
+        point = point.field("battery_remaining_mah", float(battery_remaining_mah))
+        point = point.field("battery_percentage", float(battery_percentage))
+        point = point.field("estimated_runtime_min", float(estimated_runtime_min))
+
+        if predicted_temperature is not None:
+            point = point.field("predicted_temperature_c", float(predicted_temperature))
+
+        if predicted_humidity is not None:
+            point = point.field("predicted_humidity_pct", float(predicted_humidity))
+
+        if predicted_load_voltage is not None:
+            point = point.field("predicted_load_voltage_v", float(predicted_load_voltage))
+
+        if predicted_current is not None:
+            point = point.field("predicted_current_ma", float(predicted_current))
+
+        if predicted_power is not None:
+            point = point.field("predicted_power_mw", float(predicted_power))
+
+        if predicted_battery_percentage is not None:
+            point = point.field("predicted_battery_percentage", float(predicted_battery_percentage))
 
         write_api.write(
             bucket=INFLUX_BUCKET,
@@ -375,6 +611,21 @@ def sensor_values():
             "robot_mode": robot_mode,
             "remote_command": remote_command,
             "camera_enabled": camera_enabled,
+            "ml_status": ml_status,
+            "ml_anomaly": ml_anomaly,
+            "ml_score": ml_score,
+            "system_recommendation": system_recommendation,
+            "analysis_reason": analysis_reason,
+            "battery_used_mah": battery_used_mah,
+            "battery_remaining_mah": battery_remaining_mah,
+            "battery_percentage": battery_percentage,
+            "estimated_runtime_min": estimated_runtime_min,
+            "predicted_temperature_c": predicted_temperature,
+            "predicted_humidity_pct": predicted_humidity,
+            "predicted_load_voltage_v": predicted_load_voltage,
+            "predicted_current_ma": predicted_current,
+            "predicted_power_mw": predicted_power,
+            "predicted_battery_percentage": predicted_battery_percentage,
             "message": "Datos recibidos y enviados a InfluxDB"
         }), 200
 

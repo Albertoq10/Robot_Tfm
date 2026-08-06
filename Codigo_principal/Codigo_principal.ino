@@ -70,11 +70,11 @@ const int pwmChannelA = 0;
 const int pwmChannelB = 1;
 
 const int SPEED_NORMAL = 100;
-const int SPEED_TURN   = 180;
-const int SPEED_BACK   = 150;
+const int SPEED_TURN   = 130;
+const int SPEED_BACK   = 130;
 
-const int FRONT_LIMIT_MM = 500;
-const int SIDE_LIMIT_MM  = 300;
+const int FRONT_LIMIT_MM = 400;
+const int SIDE_LIMIT_MM  = 350;
 
 enum RobotState {
   STATE_NORMAL,
@@ -93,13 +93,13 @@ unsigned long lastHttpSend = 0;
 unsigned long lastCommandCheck = 0;
 
 const unsigned long CORRECT_TIME = 250;
-const unsigned long BACK_TIME = 1200;
-const unsigned long ESCAPE_TURN_TIME = 1300;
+const unsigned long BACK_TIME = 600;
+const unsigned long ESCAPE_TURN_TIME = 600;
 const unsigned long SENSOR_PRINT_TIME = 1000;
 const unsigned long HTTP_SEND_INTERVAL = 3000;
 const unsigned long COMMAND_CHECK_INTERVAL = 80;
 
-const int REMOTE_COMMAND_TIMEOUT_MS = 300;
+const int REMOTE_COMMAND_TIMEOUT_MS = 400;
 
 bool escapeTurnRight = true;
 
@@ -205,8 +205,8 @@ void turnRight(int speedValue) {
   digitalWrite(in1, LOW);
   digitalWrite(in2, HIGH);
 
-  digitalWrite(in3, LOW);
-  digitalWrite(in4, HIGH);
+  digitalWrite(in3, HIGH);
+  digitalWrite(in4, LOW);
 
   ledcWrite(enA, speedValue);
   ledcWrite(enB, speedValue);
@@ -216,8 +216,8 @@ void turnLeft(int speedValue) {
   digitalWrite(in1, HIGH);
   digitalWrite(in2, LOW);
 
-  digitalWrite(in3, HIGH);
-  digitalWrite(in4, LOW);
+  digitalWrite(in3, LOW);
+  digitalWrite(in4, HIGH);
 
   ledcWrite(enA, speedValue);
   ledcWrite(enB, speedValue);
@@ -381,16 +381,12 @@ void sendDataToFlask() {
 
   String url = String(SERVER_BASE_URL) + "/sensor_values";
 
-  Serial.println();
-  Serial.println("========== ENVIO A FLASK ==========");
-  Serial.print("URL: ");
-  Serial.println(url);
-  Serial.print("JSON: ");
-  Serial.println(json_string);
+ 
 
   HTTPClient http;
   http.begin(wifi, url);
-  http.setConnectTimeout(1000);
+  http.setConnectTimeout(150);
+  http.setTimeout(150);
   http.addHeader("Content-Type", "application/json");
 
   int httpResponseCode = http.POST(json_string);
@@ -545,6 +541,7 @@ void setup() {
   Serial.println("Robot ESP32 + ToF + DHT20 + INA219 + MQ-2 + Flask + modos");
 
   Wire.begin(I2C_SDA, I2C_SCL);
+  Wire.setClock(400000);
 
   analogSetAttenuation(ADC_11db);
   mq2StartTime = millis();
@@ -607,11 +604,10 @@ void loop() {
   bool frontBlocked = frontTofValid && frontDistanceMm < FRONT_LIMIT_MM;
 
   bool rightTooClose = rightTofValid && rightDistanceMm < SIDE_LIMIT_MM;
-  bool leftTooClose  = leftTofValid  && leftDistanceMm  < SIDE_LIMIT_MM;
+  bool leftTooClose  = leftTofValid  && leftDistanceMm  < SIDE_LIMIT_MM;  
 
-  bool rightFree = rightTofValid && rightDistanceMm > SIDE_LIMIT_MM;
-  bool leftFree  = leftTofValid  && leftDistanceMm  > SIDE_LIMIT_MM;
-
+  bool rightFree = !rightTofValid || rightDistanceMm > SIDE_LIMIT_MM;
+  bool leftFree  = !leftTofValid  || leftDistanceMm  > SIDE_LIMIT_MM; 
   if (now - lastCommandCheck >= COMMAND_CHECK_INTERVAL) {
     lastCommandCheck = now;
     readCommandFromFlask();
