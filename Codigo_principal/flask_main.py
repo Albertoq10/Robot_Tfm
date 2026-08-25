@@ -1,55 +1,81 @@
+
+#en el documento se explca el uso de cada libreria de forma brvee
 from flask import Flask, request, jsonify
+
 from datetime import datetime, timezone
 import os
 import threading
 import time
 import cv2
+
 import numpy as np
+
 import requests
 import keyboard
 
 
 from sklearn.ensemble import IsolationForest
+
 from sklearn.preprocessing import StandardScaler
 
 from influxdb_client import InfluxDBClient, Point, WritePrecision
+
 from influxdb_client.client.write_api import SYNCHRONOUS
+
+#esto permite instalar lo necesario para ejecutar, debido a que se esta usando un entonro virtual en la PC
 #pip install flask influxdb-client opencv-python numpy requests keyboard scikit-learn
+
 
 app = Flask("servidor_flask")
 
+
+#informacion de Influx
 INFLUX_URL = "https://us-east-1-1.aws.cloud2.influxdata.com"
+
 INFLUX_TOKEN = "YQ3PP1vQBgVwNJjT0zkbos6WF1PIrwAjPshrpD6qK4fOXrPhOFVXsFTRpKMm7qlTsbh4mnYtSRVdaPyd5a0Lsg=="
 INFLUX_ORG = "Student"
+
 INFLUX_BUCKET = "Robot_TFM"
 
+#ip de movil para la camara
 CAMERA_STREAM_URL = "http://172.20.10.11"
 
+#variables globales para el control del robot, el comando remoto y el estado de la camara
 robot_mode = "autonomous"
 remote_command = "stop"
 camera_enabled = False
+
+#dice cuanto tiempo ha pasado desde el ultimo comando enviado al robot, para evitar que se quede sin recibir comandos
 last_command_time = time.time()
 
 camera_thread = None
 camera_running = False
 
+
 last_received_data = {}
 
-
+#variables para el modelo de Isolation Forest, que se usa para detectar anomalias en los datos recibidos del robot
 training_data = []
 ml_model = None
 ml_scaler = None
+
 ml_trained = False
+
 
 TRAINING_SAMPLES = 30
 
+#se queria hacer una estimacion de la bateria, pero al fianl no tenia sentido 
+# lo relacionado con la bateira se descarta
 BATTERY_CAPACITY_MAH = 2450
 BATTERY_EFFICIENCY = 0.85
 USABLE_BATTERY_MAH = BATTERY_CAPACITY_MAH * BATTERY_EFFICIENCY
 
+
 battery_used_total_mah = 0.0
 last_battery_time = None
 
+
+#variables para la prediccion de los valores de los sensores
 prediction_history = {
     "temperature_c": [],
     "humidity_pct": [],
@@ -59,12 +85,18 @@ prediction_history = {
     "battery_percentage": []
 }
 
+#ventana de prediccion, se usa para predecir el siguiente valor de los sensores, se puede ajustar para mejorar la prediccion pero no es necesario poruq no es lo principla
 PREDICTION_WINDOW = 10
+
 
 recent_temperatures = []
 recent_humidities = []
+
 recent_gas_values = []
 recent_currents = []
+
+
+#toma los datos previamnete definidos
 
 client = InfluxDBClient(
     url=INFLUX_URL,
@@ -72,192 +104,274 @@ client = InfluxDBClient(
     org=INFLUX_ORG
 )
 
+
+#configuracion de escritura en Influx
 write_api = client.write_api(write_options=SYNCHRONOUS)
 
 
+
+
+#controles basicos del robot, se hizo con las teclas tradicionales de gaming
 def print_controls():
     print()
     print("========== CONTROL DEL ROBOT ==========")
+
     print("1 = modo autonomo")
     print("2 = modo estacionario")
     print("3 = modo control remoto")
+
     print("mantener W = avanzar")
     print("mantener S = retroceder")
     print("mantener A = izquierda")
     print("mantener D = derecha")
+
     print("soltar tecla = stop")
+
     print("C = abrir/cerrar camara")
     print("Q = cerrar Flask")
+
     print("=======================================")
     print()
 
 
+#esto es para la camara esp32cam
+#funciona de manera independiente a la esp32
+
 def camera_viewer():
     global camera_running
+
     global camera_enabled
+
 
     print("Conectando a la ESP32-CAM...")
 
+#conexion a la camara, si no se puede conectar, se desactiva la camara y se retorna
     try:
+
         response = requests.get(CAMERA_STREAM_URL, stream=True, timeout=10)
         print("Estado HTTP camara:", response.status_code)
+
     except Exception as e:
         print("No se pudo conectar a la camara:")
         print(e)
         camera_running = False
         camera_enabled = False
         return
+    
 
     if response.status_code != 200:
         print("La camara respondio, pero no con video.")
         camera_running = False
         camera_enabled = False
         return
-
+    
+#se crea una ventana para mostrar el video de la camara, y se ajusta el tamaño de la ventana
     bytes_data = b""
-
+#config basica
     cv2.namedWindow("ESP32-CAM Stream", cv2.WINDOW_NORMAL)
     cv2.resizeWindow("ESP32-CAM Stream", 800, 600)
 
+#chunk size de 16 KB para leer el stream de la camara, se puede ajustar para mejorar la calidad del video
+# en este caso se para tener poco retraso
+
+
     for chunk in response.iter_content(chunk_size=16384):
+
         if not camera_running:
             break
 
         bytes_data += chunk
 
         start = bytes_data.find(b"\xff\xd8")
+
         end = bytes_data.find(b"\xff\xd9")
 
         if start != -1 and end != -1:
             jpg = bytes_data[start:end + 2]
+
             bytes_data = b""
+
 
             frame = cv2.imdecode(
                 np.frombuffer(jpg, dtype=np.uint8),
+
+            
                 cv2.IMREAD_COLOR
             )
 
+
             if frame is None:
+
                 continue
 
             cv2.imshow("ESP32-CAM Stream", frame)
 
+
         if cv2.waitKey(1) & 0xFF == ord("q"):
             camera_running = False
+
             camera_enabled = False
             break
 
     try:
+
         response.close()
     except Exception:
         pass
 
+
     try:
+
         cv2.destroyWindow("ESP32-CAM Stream")
+
     except Exception:
         pass
 
     camera_running = False
+
     camera_enabled = False
     print("Stream de camara cerrado.")
 
 
+
+#control del mismo teclado del ordenador
+
 def keyboard_control():
     global robot_mode
     global remote_command
+
+
     global camera_enabled
     global last_command_time
+
+
     global camera_thread
     global camera_running
 
     print_controls()
 
+#srive para imprimir el estado del robot, el comando remoto y si la camara esta activa
     previous_mode = robot_mode
+
     previous_command = remote_command
+
     previous_camera_state = camera_enabled
 
+
+#condiciones para cpntrol robot, el robot consulta a estos comandos del servidor
     while True:
         if keyboard.is_pressed("q"):
             camera_running = False
             camera_enabled = False
             remote_command = "stop"
             last_command_time = time.time()
+
             print("Cerrando Flask y control del robot.")
             os._exit(0)
+
+
 
         if keyboard.is_pressed("1"):
             robot_mode = "autonomous"
             remote_command = "stop"
+
             last_command_time = time.time()
             time.sleep(0.25)
+
+
 
         elif keyboard.is_pressed("2"):
             robot_mode = "stationary"
             remote_command = "stop"
+
+
             last_command_time = time.time()
+
             time.sleep(0.25)
 
         elif keyboard.is_pressed("3"):
             robot_mode = "remote"
+
+
             remote_command = "stop"
             last_command_time = time.time()
             time.sleep(0.25)
 
         elif keyboard.is_pressed("c"):
+
             last_command_time = time.time()
+
 
             if not camera_running:
                 camera_enabled = True
                 camera_running = True
                 print("Camara: ON")
+
                 camera_thread = threading.Thread(target=camera_viewer, daemon=True)
                 camera_thread.start()
             else:
                 camera_enabled = False
+
                 camera_running = False
+
                 print("Camara: OFF")
 
             time.sleep(0.5)
 
+#solo en modo remoto funcionan estas teclas
         elif robot_mode == "remote":
             if keyboard.is_pressed("w"):
                 remote_command = "forward"
                 last_command_time = time.time()
 
+
             elif keyboard.is_pressed("s"):
                 remote_command = "backward"
+
                 last_command_time = time.time()
 
             elif keyboard.is_pressed("a"):
                 remote_command = "left"
+
                 last_command_time = time.time()
+
 
             elif keyboard.is_pressed("d"):
                 remote_command = "right"
+
                 last_command_time = time.time()
 
             else:
                 remote_command = "stop"
+
                 last_command_time = time.time()
 
         if robot_mode != previous_mode or remote_command != previous_command or camera_enabled != previous_camera_state:
             print(
                 f"Modo: {robot_mode} | "
+
                 f"Comando: {remote_command} | "
+
                 f"Camara: {'ON' if camera_enabled else 'OFF'}"
             )
 
             previous_mode = robot_mode
+
             previous_command = remote_command
             previous_camera_state = camera_enabled
 
+
         time.sleep(0.05)
 
+        
+#varibales para detectar anomalias
+#se usa la temperatura, humedad, corriente y potencia para detectar anomalia
 def ml_anomaly_detection(temperature, humidity, current_ma, power_mw):
     global ml_model
     global ml_scaler
     global ml_trained
 
+#aqui se comprueba que los datos no esten vacios
     if temperature is None or humidity is None or current_ma is None or power_mw is None:
         return {
             "ml_status": "not_available",
@@ -267,13 +381,18 @@ def ml_anomaly_detection(temperature, humidity, current_ma, power_mw):
             "analysis_reason": "missing_data"
         }
 
+
+#funciona para entrenar el modelo de Isolation Forest y detectar anomalias
     sample = [
         float(temperature),
         float(humidity),
+
         float(current_ma),
         float(power_mw)
     ]
 
+#si no se ha entrenado el modelo, se agregan los datos a la lista de entrenamiento
+#sirve para calibrar el modelo y detectar anomalias
     if not ml_trained:
         training_data.append(sample)
 
@@ -291,19 +410,23 @@ def ml_anomaly_detection(temperature, humidity, current_ma, power_mw):
 
             print("Modelo Isolation Forest entrenado.")
 
+#retorna  con el estado del modelo y la recomendacion del sistema
         return {
             "ml_status": "calibrating",
             "ml_anomaly": False,
+
             "ml_score": 0.0,
             "system_recommendation": "continue",
             "analysis_reason": "model_calibration"
         }
 
+#si el modelo ya esta entrenado, se escalan los datos y se hace la prediccion
     sample_scaled = ml_scaler.transform([sample])
 
     prediction = ml_model.predict(sample_scaled)[0]
     score = ml_model.decision_function(sample_scaled)[0]
 
+#si se detecta una anomalia, se retorna con la recomendacion de quedarse en el lugar
     if prediction == -1:
         return {
             "ml_status": "anomaly",
@@ -313,6 +436,7 @@ def ml_anomaly_detection(temperature, humidity, current_ma, power_mw):
             "analysis_reason": "anomaly_detected"
         }
 
+#en caso contrario, se retorna con la recomendacion de moverse
     return {
         "ml_status": "normal",
         "ml_anomaly": False,
@@ -322,6 +446,8 @@ def ml_anomaly_detection(temperature, humidity, current_ma, power_mw):
     }
 
 
+#########################################################################################################
+#esta funcion no se utiliza, fue para integrar la estimacion de la bateira, pero no funciono como se esperbaa
 def update_battery_estimation(current_ma):
     global battery_used_total_mah
     global last_battery_time
@@ -361,7 +487,9 @@ def update_battery_estimation(current_ma):
         "battery_percentage": battery_percentage,
         "estimated_runtime_min": estimated_runtime_min
     }
+###################################################################################################################
 
+#etsa funcion predice el siguiente valor de los datos recibidos, se usa para la temperatura, humedad, voltaje, corriente y potencia
 
 def predict_next_value(name, value):
     if value is None:
@@ -385,6 +513,8 @@ def predict_next_value(name, value):
 
 
 
+#aqui se definen los endpoints del servidor Flask, que permiten consultar el estado del robot, enviar comandos y recibir datos de sensores
+
 @app.route("/", methods=["GET"])
 def home():
     return jsonify({
@@ -395,6 +525,8 @@ def home():
         "camera_stream_url": CAMERA_STREAM_URL
     }), 200
 
+
+#en esta funcion se retorna el estado del robot, el comando remoto, si la camara esta activa y el tiempo desde el ultimo comando
 
 @app.route("/command", methods=["GET"])
 def command():
@@ -408,6 +540,7 @@ def command():
     }), 200
 
 
+#aqui se retorna el ultimo dato recibido de los sensores, junto con el estado del robot, el comando remoto y si la camara esta activa
 @app.route("/last_data", methods=["GET"])
 def last_data():
     return jsonify({
@@ -418,6 +551,8 @@ def last_data():
     }), 200
 
 
+
+#ahora se define el endpoint para recibir los datos de los sensores, procesarlos, detectar anomalias y enviarlos a InfluxDB
 @app.route("/sensor_values", methods=["GET", "POST"])
 def sensor_values():
     global last_received_data
@@ -428,6 +563,9 @@ def sensor_values():
     data = request.get_json(force=True, silent=True) or {}
     last_received_data = data
 
+#esta parte del codigo se encarga de extraer los datos recibidos del robot,
+#es repetitivo, pero es necesario para poder procesarlos y enviarlos a InfluxDB
+#no todas las variables se consideraron
     device_id = data.get("device_id", "unknown")
     esp32_robot_state = data.get("robot_state", "unknown")
 
@@ -455,6 +593,7 @@ def sensor_values():
     gas_voltage = data.get("gas_voltage_v")
     gas_alert = data.get("gas_alert", False)
 
+#aqui se llama a la funcion de deteccion de anomalias, que utiliza el modelo de Isolation Forest
     ml_result = ml_anomaly_detection(
         temperature,
         humidity,
@@ -462,18 +601,21 @@ def sensor_values():
         power_mw
     )
 
+#funcion que retorna el estado del modelo, si hay anomalia, el score, la recomendacion del sistema y el motivo del analisis
     ml_status = ml_result["ml_status"]
     ml_anomaly = ml_result["ml_anomaly"]
     ml_score = ml_result["ml_score"]
     system_recommendation = ml_result["system_recommendation"]
     analysis_reason = ml_result["analysis_reason"]
 
-    battery_result = update_battery_estimation(current_ma)
+    battery_result = update_battery_estimation(current_ma)# no se usa
 
     battery_used_mah = battery_result["battery_used_mah"]
+
     battery_remaining_mah = battery_result["battery_remaining_mah"]
     battery_percentage = battery_result["battery_percentage"]
     estimated_runtime_min = battery_result["estimated_runtime_min"]
+
 
     predicted_temperature = predict_next_value("temperature_c", temperature)
     predicted_humidity = predict_next_value("humidity_pct", humidity)
@@ -483,6 +625,8 @@ def sensor_values():
     predicted_battery_percentage = predict_next_value("battery_percentage", battery_percentage)
     
     print()
+    #los datos se reciben de la esp32 y se imprimen en consola para verificar que se estan recibiendo correctamente
+    #al estar realziando las prueabs, se veian los mismos datos en arduino 
     print("----- Datos recibidos -----")
     print(f"Tiempo: {datetime.now()}")
     print(f"Device ID: {device_id}")
@@ -498,23 +642,28 @@ def sensor_values():
     print(f"ML score: {ml_score}")
     print(f"Recomendacion sistema: {system_recommendation}")
     print(f"Motivo analisis: {analysis_reason}")
-    print(f"Bateria usada: {battery_used_mah} mAh")
-    print(f"Bateria restante: {battery_remaining_mah} mAh")
-    print(f"Bateria porcentaje: {battery_percentage} %")
+    #print(f"Bateria usada: {battery_used_mah} mAh")
+    #print(f"Bateria restante: {battery_remaining_mah} mAh")
+    #print(f"Bateria porcentaje: {battery_percentage} %")
     print(f"Autonomia estimada: {estimated_runtime_min} min")
     print(f"Temperatura predicha: {predicted_temperature} C")
     print(f"Humedad predicha: {predicted_humidity} %")
+
     print(f"Voltaje predicho: {predicted_load_voltage} V")
     print(f"Corriente predicha: {predicted_current} mA")
+
     print(f"Potencia predicha: {predicted_power} mW")
-    print(f"Bateria predicha: {predicted_battery_percentage} %")
+    #print(f"Bateria predicha: {predicted_battery_percentage} %")
     print(f"Distancia frontal: {front_distance} mm")
+
     print(f"Distancia derecha: {right_distance} mm")
     print(f"Distancia izquierda: {left_distance} mm")
+
     print(f"Corriente: {current_ma} mA")
     print(f"Potencia: {power_mw} mW")
     print()
 
+#aqui se crea un punto de datos para InfluxDB, con las etiquetas y campos correspondientes
     try:
         point = (
             Point("robot_sensors")
@@ -528,6 +677,9 @@ def sensor_values():
             .time(datetime.now(timezone.utc), WritePrecision.NS)
         )
 
+
+        #agrega los campos al punto de datos, solo si no son nulos
+        #esta oarte tambien es repetitiva, pero es necesaria para enviar los datos a influx
         if temperature is not None:
             point = point.field("temperature_c", float(temperature))
 
@@ -572,15 +724,20 @@ def sensor_values():
         if gas_voltage is not None:
             point = point.field("gas_voltage_v", float(gas_voltage))
 
+
+
+#se encarga de enviar los datos a InfluxDB, si hay algun error, se captura y se retorna un mensaje de error
         point = point.field("gas_alert", bool(gas_alert))
         point = point.field("camera_enabled", bool(camera_enabled))
         point = point.field("ml_anomaly", bool(ml_anomaly))
         point = point.field("ml_score", float(ml_score))
+
         point = point.field("battery_used_mah", float(battery_used_mah))
         point = point.field("battery_remaining_mah", float(battery_remaining_mah))
         point = point.field("battery_percentage", float(battery_percentage))
         point = point.field("estimated_runtime_min", float(estimated_runtime_min))
 
+#ahora se agregan los valores predichos al punto de datos, solo si no son nulos
         if predicted_temperature is not None:
             point = point.field("predicted_temperature_c", float(predicted_temperature))
 
@@ -599,11 +756,16 @@ def sensor_values():
         if predicted_battery_percentage is not None:
             point = point.field("predicted_battery_percentage", float(predicted_battery_percentage))
 
+#se envia el punto de datos a InfluxDB, si hay algun error, se captura y se retorna un mensaje de error
         write_api.write(
             bucket=INFLUX_BUCKET,
             org=INFLUX_ORG,
             record=point
         )
+
+
+        #en esta parte se retorna un mensaje de exito, junto con los datos recibidos y procesados
+        #no todos se seleccionan en influx, pero se retornan para verificar que se estan recibiendo correctamente
 
         return jsonify({
             "status": "ok",
@@ -629,6 +791,7 @@ def sensor_values():
             "message": "Datos recibidos y enviados a InfluxDB"
         }), 200
 
+#sirve para capturar cualquier error que ocurra al enviar los datos a InfluxDB y retornar un mensaje de error al cliente
     except Exception as e:
         print("Error enviando a InfluxDB:", repr(e))
 
@@ -638,13 +801,16 @@ def sensor_values():
             "error": str(e)
         }), 500
 
+#se inicia el servidor Flask y el hilo de control del teclado, y se captura la interrupcion del teclado para cerrar el servidor y el hilo de manera segura
 
 if __name__ == "__main__":
     keyboard_thread = threading.Thread(target=keyboard_control, daemon=True)
     keyboard_thread.start()
 
+#se inicia el servidor Flask en el puerto 6000, con debug desactivado y sin recarga auto 
     try:
         app.run(
+            
             host="0.0.0.0",
             port=6000,
             debug=False,
