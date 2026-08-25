@@ -326,10 +326,14 @@ void readMq2Sensor(unsigned long now) {
       mq2Ready = true;
 
 
+
       Serial.println("MQ-2 listo para medir.");
+
     } else {
+
       return;
     }
+
   }
 
 
@@ -337,6 +341,8 @@ void readMq2Sensor(unsigned long now) {
     lastMq2Read = now;
 
     gasRaw = analogRead(MQ2_AO_PIN);
+
+
 
     gasVoltageEsp = gasRaw * (3.3 / 4095.0);//3.3V, esto poruqe no se le puede meter voltajes mayores de 3.3 a tarjeta
 
@@ -364,7 +370,10 @@ void readEnvironmentalSensors() {
   if (ina_ok) {
 
     shuntvoltage = ina219.getShuntVoltage_mV();
+
     busvoltage = ina219.getBusVoltage_V();
+
+
     current_mA = ina219.getCurrent_mA();
 
     power_mW = ina219.getPower_mW();
@@ -408,7 +417,9 @@ void readCommandFromFlask() {
 
       robotMode = String(modeValue);
       remoteCommand = String(commandValue);
+
       cameraEnabled = doc["camera_enabled"] | cameraEnabled;
+
       commandAgeMs = doc["command_age_ms"] | commandAgeMs;
 
     }
@@ -436,6 +447,7 @@ void sendDataToFlask() {
   doc["robot_state"] = getRobotStateName();
 
   doc["robot_mode"] = robotMode;
+
   doc["remote_command"] = remoteCommand;
 
   doc["camera_enabled"] = cameraEnabled;
@@ -457,6 +469,7 @@ void sendDataToFlask() {
   if (tof_right_ok) {
 
     doc["right_distance_mm"] = rightDistanceMm;
+
     doc["right_tof_valid"] = rightTofValid;
   }
 
@@ -472,6 +485,9 @@ void sendDataToFlask() {
 
     doc["shunt_voltage_mv"] = shuntvoltage;
     doc["load_voltage_v"] = loadvoltage;
+    
+
+
     doc["current_ma"] = current_mA;
 
 
