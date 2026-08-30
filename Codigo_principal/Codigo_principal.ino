@@ -46,11 +46,13 @@ bool gasAlert = false;
 const int GAS_THRESHOLD = 2200;//umbral de gas, relamente no se hicieorn muchas pruebas
 
 
+/*
 String previousRobotMode = "";// Guarda  modo anterior para detectar cambios 
 
 
 unsigned long lastStationarySend = 0;//freucneua de envio de datos 
 const unsigned long STATIONARY_INTERVAL = 15000; // 15 segundos
+*/
 
 //red de movil
 const char* WIFI_SSID = "iPhoneBETO";
@@ -98,12 +100,12 @@ const int pwmChannelA = 0;
 const int pwmChannelB = 1;
 
 //velocidades, mazimo es de 255
-const int SPEED_NORMAL = 100;
-const int SPEED_TURN   = 130;
-const int SPEED_BACK   = 130;
+const int SPEED_NORMAL = 120;
+const int SPEED_TURN   = 110;
+const int SPEED_BACK   = 110;
 
 const int FRONT_LIMIT_MM = 400;
-const int SIDE_LIMIT_MM  = 350;
+const int SIDE_LIMIT_MM  = 230;
 
 
 //posibles estados del robot
@@ -739,6 +741,7 @@ void handleRemoteControl(bool frontBlocked) {
 
 
 //simplemnte para el robot
+
 void handleStationaryMode() {
 
   stopMotors();
@@ -746,13 +749,15 @@ void handleStationaryMode() {
 
 //para enviar datos cada cierto intervlao
 //esto ayuda  reducir un poco el consumo 
+/*
   if (millis() - lastStationarySend >= STATIONARY_INTERVAL) {
     sendDataToFlask();
     lastStationarySend = millis();
   }
-
+*/
 }
 
+/*
 
 void updatePowerMode() {//para la gestion de bajo consumo
   
@@ -794,6 +799,8 @@ void updatePowerMode() {//para la gestion de bajo consumo
   }
 
 }
+*/
+
 //configuracion basica 
 void setup() {
 
@@ -914,13 +921,13 @@ void loop() {
   }
 
 
-  updatePowerMode();//activa/desactiva modo bajo consumo segun sea necesario
-
+ // updatePowerMode();//activa/desactiva modo bajo consumo segun sea necesario
+/*
   if (robotMode == "stationary") {
     handleStationaryMode();
     return;
   }
-
+*/
 
   if (now - lastSensorPrint >= SENSOR_PRINT_TIME) {
     lastSensorPrint = now;
