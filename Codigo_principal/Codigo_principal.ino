@@ -100,12 +100,12 @@ const int pwmChannelA = 0;
 const int pwmChannelB = 1;
 
 //velocidades, mazimo es de 255
-const int SPEED_NORMAL = 120;
-const int SPEED_TURN   = 110;
-const int SPEED_BACK   = 110;
+const int SPEED_NORMAL = 130;
+const int SPEED_TURN   = 130;
+const int SPEED_BACK   = 130;
 
-const int FRONT_LIMIT_MM = 400;
-const int SIDE_LIMIT_MM  = 230;
+const int FRONT_LIMIT_MM = 420;
+const int SIDE_LIMIT_MM  = 200;
 
 
 //posibles estados del robot
@@ -130,8 +130,8 @@ unsigned long lastCommandCheck = 0;
 
 //timepo en segundos, esto se hizo por prueba y error
 const unsigned long CORRECT_TIME = 250;
-const unsigned long BACK_TIME = 600;
-const unsigned long ESCAPE_TURN_TIME = 600;
+const unsigned long BACK_TIME = 500;
+const unsigned long ESCAPE_TURN_TIME = 500;
 const unsigned long SENSOR_PRINT_TIME = 1000;
 const unsigned long HTTP_SEND_INTERVAL = 3000;
 const unsigned long COMMAND_CHECK_INTERVAL = 80;
