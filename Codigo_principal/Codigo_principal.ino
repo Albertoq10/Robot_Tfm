@@ -45,6 +45,13 @@ bool gasAlert = false;
 
 const int GAS_THRESHOLD = 2200;//umbral de gas, relamente no se hicieorn muchas pruebas
 
+
+String previousRobotMode = "";// Guarda  modo anterior para detectar cambios 
+
+
+unsigned long lastStationarySend = 0;//freucneua de envio de datos 
+const unsigned long STATIONARY_INTERVAL = 15000; // 15 segundos
+
 //red de movil
 const char* WIFI_SSID = "iPhoneBETO";
 const char* WIFI_PASSWORD = "12345678";
@@ -291,7 +298,7 @@ void initToFSensors() {
   digitalWrite(XSHUT_RIGHT, LOW);
 
   digitalWrite(XSHUT_LEFT, LOW);
-  delay(100);]
+  delay(100);
 
   digitalWrite(XSHUT_FRONT, HIGH);
   delay(100);
@@ -736,6 +743,56 @@ void handleStationaryMode() {
 
   stopMotors();
 
+
+//para enviar datos cada cierto intervlao
+//esto ayuda  reducir un poco el consumo 
+  if (millis() - lastStationarySend >= STATIONARY_INTERVAL) {
+    sendDataToFlask();
+    lastStationarySend = millis();
+  }
+
+}
+
+
+void updatePowerMode() {//para la gestion de bajo consumo
+  
+  if (robotMode != previousRobotMode) {
+
+    if (robotMode == "stationary") {
+      stopMotors();//no moverse
+
+      
+      WiFi.setSleep(true);//ahorro wifi
+
+    
+      setCpuFrequencyMhz(80);//freucencia de operacin menor
+
+
+//debug
+      Serial.println("Modo estacionario: reduccion de consumo activa");
+      Serial.print("Frecuencia CPU: ");
+      Serial.print(getCpuFrequencyMhz());
+
+      Serial.println(" MHz");
+    } 
+    else {
+    
+      WiFi.setSleep(false);//desactivar sleep en los modos de movimiento 
+
+      
+      setCpuFrequencyMhz(240);//frecuencia de operacion default
+
+      Serial.println("Modo activo: reduccion de consumo desactivada");
+      Serial.print("Frecuencia CPU: ");
+
+
+      Serial.print(getCpuFrequencyMhz());
+      Serial.println(" MHz");
+    }
+
+    previousRobotMode = robotMode;//actualiza
+  }
+
 }
 //configuracion basica 
 void setup() {
@@ -814,6 +871,9 @@ void setup() {
     Serial.println("Conectando...");
   }
 
+  WiFi.setSleep(true);
+  
+
 
   Serial.println("Conectado a WiFi");
   Serial.print("IP ESP32: ");
@@ -853,6 +913,13 @@ void loop() {
     readCommandFromFlask();
   }
 
+
+  updatePowerMode();//activa/desactiva modo bajo consumo segun sea necesario
+
+  if (robotMode == "stationary") {
+    handleStationaryMode();
+    return;
+  }
 
 
   if (now - lastSensorPrint >= SENSOR_PRINT_TIME) {
@@ -958,7 +1025,7 @@ void loop() {
 
   if (now - lastHttpSend >= HTTP_SEND_INTERVAL) {
     lastHttpSend = now;
-    s
+    
     sendDataToFlask();
   }
 }
